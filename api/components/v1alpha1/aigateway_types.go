@@ -35,7 +35,7 @@ type AIGatewaySpec struct {
 	BatchGateway BatchGatewayComponent `json:"batchGateway,omitempty"`
 	// ModelsAsAService controls the Models as a Service sub-component.
 	ModelsAsAService ModelsAsAServiceComponent `json:"modelsAsAService,omitempty"`
-	// AIGrid controls the AI Grid sub-component: the grid CRDs and the grid operator.
+	// AIGrid controls the AI Grid sub-component.
 	AIGrid AIGridComponent `json:"aiGrid,omitempty"`
 }
 

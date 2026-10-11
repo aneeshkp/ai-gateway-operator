@@ -53,8 +53,7 @@ spec:
             description: AIGatewaySpec defines the desired state of AIGateway.
             properties:
               aiGrid:
-                description: 'AIGrid controls the AI Grid sub-component: the grid
-                  CRDs and the grid operator.'
+                description: AIGrid controls the AI Grid sub-component.
                 properties:
                   managementState:
                     default: Removed
