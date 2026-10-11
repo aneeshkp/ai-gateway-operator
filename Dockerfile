@@ -30,6 +30,7 @@ COPY config/manifests/batchgateway/ config/manifests/batchgateway/
 COPY config/manifests/maascontroller/ config/manifests/maascontroller/
 COPY config/manifests/aigatewaycontroller/ config/manifests/aigatewaycontroller/
 COPY config/manifests/aigrid/ config/manifests/aigrid/
+COPY config/manifests/aigridoperator/ config/manifests/aigridoperator/
 COPY config/component_metadata.yaml config/manifests/ai-gateway-operator/component_metadata.yaml
 
 # Generated code and manifests come from the host (make container-prep).

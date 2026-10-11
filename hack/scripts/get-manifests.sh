@@ -93,6 +93,7 @@ declare -A COMPONENTS=(
     [maascontroller]="models-as-a-service|deployment/base/maas-controller|e70170e4f8ae3e7bb764d1f5dc630a9e88f37499|e70170e4f8ae3e7bb764d1f5dc630a9e88f37499"
     [aigatewaycontroller]="ai-gateway-controller|config/self|46caf7ee42c74e49ddbb2f1037895c0a89251a39|46caf7ee42c74e49ddbb2f1037895c0a89251a39"
     [aigrid]="praxis-ai-grid-operator|deploy/crds|cc9c3004514a4b40d76baafb3f6263a25ab27fe9|8ec9c25e8f8a025e8d44f130be9ede22a3009da4"
+    [aigridoperator]="praxis-ai-grid-operator|deploy/overlays/openshift|7e7b1192b5ac2ea39ac2ff4e9e5e8ba6b8ecb9a3|7e7b1192b5ac2ea39ac2ff4e9e5e8ba6b8ecb9a3"
 )
 
 for component_name in "${!COMPONENTS[@]}"; do
