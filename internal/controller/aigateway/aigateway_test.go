@@ -1157,18 +1157,24 @@ func TestAIGridManifestsRenderOnlyCRDs(t *testing.T) {
 
 // TestAIGridOperatorManifestsRender renders the vendored grid operator bundle the way
 // the kustomize action does: every namespaced object lands in the render namespace,
-// the bindings follow, and the Deployment image is the params.env value.
+// the bindings follow, and the related-image override reaches the Deployment.
 func TestAIGridOperatorManifestsRender(t *testing.T) {
 	g := NewWithT(t)
 
-	mi := odhtypes.ManifestInfo{Path: filepath.Join("..", "..", "..", "config", "manifests"), ContextDir: "aigridoperator"}
-	objs, err := kustomize.NewEngine().Render(mi.String(), kustomize.WithNamespace("test-ns"))
+	manifestsPath := t.TempDir()
+	source := filepath.Join("..", "..", "..", "config", "manifests", "aigridoperator")
+	g.Expect(os.CopyFS(filepath.Join(manifestsPath, "aigridoperator"), os.DirFS(source))).To(Succeed())
+	image := "quay.io/example/grid-operator@sha256:" + strings.Repeat("a", 64)
+	t.Setenv("RELATED_IMAGE_ODH_PRAXIS_AI_GRID_OPERATOR_IMAGE", image)
+	m, err := NewModule(&moduleconfig.Config{
+		PlatformType:          "OpenDataHub",
+		PlatformVersion:       "1.0.0",
+		ManifestsPath:         manifestsPath,
+		ApplicationsNamespace: "test-ns",
+	})
 	g.Expect(err).NotTo(HaveOccurred())
-
-	params, err := os.ReadFile(filepath.Join(mi.String(), "params.env"))
+	objs, err := kustomize.NewEngine().Render(m.aiGridOperatorManifestInfo.String(), kustomize.WithNamespace("test-ns"))
 	g.Expect(err).NotTo(HaveOccurred())
-	image := strings.TrimSpace(strings.TrimPrefix(string(params), "grid-operator-image="))
-	g.Expect(image).NotTo(BeEmpty())
 
 	kinds := map[string]int{}
 	for _, o := range objs {
