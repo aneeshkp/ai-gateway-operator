@@ -1088,9 +1088,9 @@ func TestInitializeManagedAIGrid(t *testing.T) {
 	g.Expect(m.initialize(context.Background(), rr)).To(Succeed())
 	g.Expect(rr.Manifests).To(HaveLen(2))
 	g.Expect(rr.Manifests[0].ContextDir).To(Equal("aigrid"))
-	g.Expect(rr.Manifests[0].String()).To(Equal("/manifests/aigrid"))
-	g.Expect(rr.Manifests[1].ContextDir).To(Equal("aigridoperator"))
-	g.Expect(rr.Manifests[1].String()).To(Equal("/manifests/aigridoperator"))
+	g.Expect(rr.Manifests[0].String()).To(Equal("/manifests/aigrid/crds"))
+	g.Expect(rr.Manifests[1].ContextDir).To(Equal("aigrid"))
+	g.Expect(rr.Manifests[1].String()).To(Equal("/manifests/aigrid/overlays/openshift"))
 }
 
 func TestInitializeRemovedAIGrid(t *testing.T) {
@@ -1143,7 +1143,7 @@ func TestMaasAwareGCPredicateKeepsStaleAIGridCRD(t *testing.T) {
 func TestAIGridManifestsRenderOnlyCRDs(t *testing.T) {
 	g := NewWithT(t)
 
-	mi := odhtypes.ManifestInfo{Path: filepath.Join("..", "..", "..", "config", "manifests"), ContextDir: "aigrid"}
+	mi := odhtypes.ManifestInfo{Path: filepath.Join("..", "..", "..", "config", "manifests"), ContextDir: "aigrid", SourcePath: "crds"}
 	objs, err := kustomize.NewEngine().Render(mi.String(), kustomize.WithNamespace("test-ns"))
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -1162,8 +1162,8 @@ func TestAIGridOperatorManifestsRender(t *testing.T) {
 	g := NewWithT(t)
 
 	manifestsPath := t.TempDir()
-	source := filepath.Join("..", "..", "..", "config", "manifests", "aigridoperator")
-	g.Expect(os.CopyFS(filepath.Join(manifestsPath, "aigridoperator"), os.DirFS(source))).To(Succeed())
+	source := filepath.Join("..", "..", "..", "config", "manifests", "aigrid")
+	g.Expect(os.CopyFS(filepath.Join(manifestsPath, "aigrid"), os.DirFS(source))).To(Succeed())
 	image := "quay.io/example/grid-operator@sha256:" + strings.Repeat("a", 64)
 	t.Setenv("RELATED_IMAGE_ODH_PRAXIS_AI_GRID_OPERATOR_IMAGE", image)
 	m, err := NewModule(&moduleconfig.Config{

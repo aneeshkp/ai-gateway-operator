@@ -90,7 +90,7 @@ import (
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,resourceNames=gridnetworks.grid.praxis.fast;gridsites.grid.praxis.fast;inferenceproviders.grid.praxis.fast;agenttoolproviders.grid.praxis.fast,verbs=get;update;patch
 
 // AI Grid operator - permissions to deploy its vendored manifests
-// (config/manifests/aigridoperator, fetched by make get-manifests) and every rule
+// (config/manifests/aigrid/overlays/openshift, fetched by make get-manifests) and every rule
 // its ClusterRoles and Role grant, since the operator cannot grant what it lacks.
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames=grid-operator-crd;grid-operator-resources;grid-operator-metrics-scraper,verbs=get;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,resourceNames=grid-operator-crd;grid-operator-metrics-scraper,verbs=get;update;patch;delete

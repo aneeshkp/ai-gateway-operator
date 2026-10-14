@@ -120,7 +120,7 @@ var aiGridOperatorImageParamMap = map[string]string{
 // aiGridCRDSuffix is the API group suffix shared by all AI Grid CRDs.
 const aiGridCRDSuffix = ".grid.praxis.fast"
 
-// aiGridCRDNames are the CRDs vendored in config/manifests/aigrid.
+// aiGridCRDNames are the CRDs vendored in config/manifests/aigrid/crds.
 var aiGridCRDNames = []string{
 	"agenttoolproviders" + aiGridCRDSuffix,
 	"gridnetworks" + aiGridCRDSuffix,
@@ -185,13 +185,15 @@ func NewModule(cfg *moduleconfig.Config) (*Module, error) {
 	aiGridMI := odhtypes.ManifestInfo{
 		Path:       cfg.ManifestsPath,
 		ContextDir: "aigrid",
+		SourcePath: "crds",
 	}
 
 	// The grid operator, vendored as its generated platform base: the image comes
 	// through params.env and the namespace from the render.
 	aiGridOperatorMI := odhtypes.ManifestInfo{
 		Path:       cfg.ManifestsPath,
-		ContextDir: "aigridoperator",
+		ContextDir: "aigrid",
+		SourcePath: "overlays/openshift",
 	}
 
 	if err := odhdeploy.ApplyParams(aiGridOperatorMI.String(), "params.env", aiGridOperatorImageParamMap, nil); err != nil {
