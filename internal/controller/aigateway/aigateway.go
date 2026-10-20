@@ -18,7 +18,9 @@ package aigateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"sort"
 	"strings"
@@ -32,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -40,6 +43,8 @@ import (
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/conditions"
 	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
 	odhdeploy "github.com/opendatahub-io/opendatahub-operator/v2/pkg/deploy"
+	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/manifests/kustomize"
+	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
 
 	componentApi "github.com/opendatahub-io/ai-gateway-operator/api/components/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/ai-gateway-operator/pkg/config"
@@ -115,6 +120,37 @@ var aiGatewayControllerImageParamMap = map[string]string{
 
 var aiGridOperatorImageParamMap = map[string]string{
 	"grid-operator-image": "RELATED_IMAGE_ODH_PRAXIS_AI_GRID_OPERATOR_IMAGE",
+}
+
+// deriveAIGridNamespace names the namespace the grid gateway runs in, beside the AI Gateway
+// infrastructure namespace.
+func deriveAIGridNamespace(appNs string) string {
+	return deriveAIGridName(appNs, "")
+}
+
+// deriveAIGridOperatorNamespace keeps the grid operator and its site identity out of both the
+// applications namespace and the gateway's.
+func deriveAIGridOperatorNamespace(appNs string) string {
+	return deriveAIGridName(appNs, "-operator")
+}
+
+func deriveAIGridName(appNs, suffix string) string {
+	switch appNs {
+	case rhoaiApplicationsNS:
+		return "redhat-ai-grid" + suffix
+	case odhApplicationsNS:
+		return "odh-ai-grid" + suffix
+	}
+	suffix = "-ai-grid" + suffix
+	if len(appNs)+len(suffix) <= validation.DNS1123LabelMaxLength {
+		return appNs + suffix
+	}
+	// Too long for a namespace: shorten, with a hash of the full name to stay unique.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(appNs))
+	hash := fmt.Sprintf("%08x", h.Sum32())
+	base := strings.TrimRight(appNs[:validation.DNS1123LabelMaxLength-len(suffix)-len(hash)-1], "-")
+	return base + "-" + hash + suffix
 }
 
 // aiGridCRDSuffix is the API group suffix shared by all AI Grid CRDs.
@@ -197,7 +233,12 @@ func NewModule(cfg *moduleconfig.Config) (*Module, error) {
 		SourcePath: "overlays/openshift",
 	}
 
-	if err := odhdeploy.ApplyParams(aiGridOperatorMI.String(), "params.env", aiGridOperatorImageParamMap, nil); err != nil {
+	if err := odhdeploy.ApplyParams(
+		aiGridOperatorMI.String(),
+		"params.env",
+		aiGridOperatorImageParamMap,
+		map[string]string{"namespace": deriveAIGridOperatorNamespace(cfg.ApplicationsNamespace)},
+	); err != nil {
 		return nil, fmt.Errorf("failed to update images on path %s: %w", aiGridOperatorMI, err)
 	}
 
@@ -234,7 +275,18 @@ func (m *Module) initialize(ctx context.Context, rr *odhtypes.ReconciliationRequ
 
 	// CRDs first, so the operator finds its kinds established.
 	if obj.Spec.AIGrid.ManagementState == managedState {
-		rr.Manifests = append(rr.Manifests, m.aiGridManifestInfo, m.aiGridOperatorManifestInfo)
+		if rr.Client == nil {
+			return errors.New("reconciliation client is nil")
+		}
+		for _, ns := range []string{
+			deriveAIGridOperatorNamespace(m.cfg.ApplicationsNamespace),
+			deriveAIGridNamespace(m.cfg.ApplicationsNamespace),
+		} {
+			if err := ensureNamespace(ctx, rr.Client, ns); err != nil {
+				return fmt.Errorf("ensure namespace %s: %w", ns, err)
+			}
+		}
+		rr.Manifests = append(rr.Manifests, m.aiGridManifestInfo)
 	}
 
 	keepMaaSInstalled := obj.Spec.ModelsAsAService.ManagementState == managedState
@@ -594,7 +646,7 @@ func (m *Module) reportSubModuleStatus(ctx context.Context, rr *odhtypes.Reconci
 		if err != nil {
 			return fmt.Errorf("checking AI Grid CRDs: %w", err)
 		}
-		operatorReady, err := deploymentAvailable(ctx, rr, aiGridOperatorDeploymentName, ns)
+		operatorReady, err := deploymentAvailable(ctx, rr, aiGridOperatorDeploymentName, deriveAIGridOperatorNamespace(m.cfg.ApplicationsNamespace))
 		if err != nil {
 			return fmt.Errorf("checking %s Deployment: %w", aiGridOperatorDeploymentName, err)
 		}
@@ -796,4 +848,79 @@ func platformConfigMapPredicate(ns string) func(client.Object) bool {
 	return func(o client.Object) bool {
 		return o.GetName() == platformConfigName && o.GetNamespace() == ns
 	}
+}
+
+// renderAIGridOperator renders the grid operator into its own namespace and points it at the
+// gateway namespace. The shared render forces the applications namespace, and
+// ManifestInfo.Namespace breaks the render path.
+func (m *Module) renderAIGridOperator(_ context.Context, rr *odhtypes.ReconciliationRequest) error {
+	obj, ok := rr.Instance.(*componentApi.AIGateway)
+	if !ok {
+		return errors.New("instance is not an AIGateway")
+	}
+	if obj.Spec.AIGrid.ManagementState != managedState {
+		return nil
+	}
+
+	gatewayNs := deriveAIGridNamespace(m.cfg.ApplicationsNamespace)
+	objs, err := kustomize.NewEngine().Render(
+		m.aiGridOperatorManifestInfo.String(),
+		kustomize.WithNamespace(deriveAIGridOperatorNamespace(m.cfg.ApplicationsNamespace)),
+		kustomize.WithLabel(labels.ODH.Component(componentName), labels.True),
+		kustomize.WithLabel(labels.K8SCommon.PartOf, componentName),
+	)
+	if err != nil {
+		return fmt.Errorf("render grid operator: %w", err)
+	}
+
+	var gatewayBinding *unstructured.Unstructured
+	for i := range objs {
+		switch {
+		case objs[i].GetKind() == "Deployment" && objs[i].GetName() == aiGridOperatorDeploymentName:
+			if err := setContainerEnv(&objs[i], "GRID_GATEWAY_NAMESPACE", gatewayNs); err != nil {
+				return fmt.Errorf("point grid operator at %s: %w", gatewayNs, err)
+			}
+		case objs[i].GetKind() == "RoleBinding" && objs[i].GetName() == aiGridOperatorResourcesBinding:
+			gatewayBinding = objs[i].DeepCopy()
+		}
+	}
+	if gatewayBinding == nil {
+		return fmt.Errorf("render grid operator: RoleBinding %s not found", aiGridOperatorResourcesBinding)
+	}
+	// The operator writes the routing overlay and gateway Secrets into the gateway namespace.
+	gatewayBinding.SetNamespace(gatewayNs)
+	objs = append(objs, *gatewayBinding)
+
+	rr.Resources = append(rr.Resources, objs...)
+
+	return nil
+}
+
+// setContainerEnv sets an env var on every container of a rendered workload.
+func setContainerEnv(obj *unstructured.Unstructured, name, value string) error {
+	containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+	if err != nil || !found {
+		return fmt.Errorf("containers not found: %w", err)
+	}
+	for i := range containers {
+		c, ok := containers[i].(map[string]any)
+		if !ok {
+			return errors.New("container is not an object")
+		}
+		env, _, _ := unstructured.NestedSlice(c, "env")
+		entry := map[string]any{"name": name, "value": value}
+		replaced := false
+		for j := range env {
+			if e, ok := env[j].(map[string]any); ok && e["name"] == name {
+				env[j] = entry
+				replaced = true
+			}
+		}
+		if !replaced {
+			env = append(env, entry)
+		}
+		c["env"] = env
+		containers[i] = c
+	}
+	return unstructured.SetNestedSlice(obj.Object, containers, "spec", "template", "spec", "containers")
 }

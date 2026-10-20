@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -51,6 +52,7 @@ import (
 	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/manifests/kustomize"
 	odhAnnotations "github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/annotations"
+	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
 )
 
 func newTestModule(t *testing.T) *Module {
@@ -1084,13 +1086,17 @@ func TestInitializeManagedAIGrid(t *testing.T) {
 	obj := newTestAIGateway()
 	obj.Spec.AIGrid.ManagementState = managedState
 	rr := newTestRR(obj)
+	rr.Client = fake.NewClientBuilder().WithScheme(newTestScheme(t)).Build()
 
 	g.Expect(m.initialize(context.Background(), rr)).To(Succeed())
-	g.Expect(rr.Manifests).To(HaveLen(2))
+	g.Expect(rr.Manifests).To(HaveLen(1))
 	g.Expect(rr.Manifests[0].ContextDir).To(Equal("aigrid"))
 	g.Expect(rr.Manifests[0].String()).To(Equal("/manifests/aigrid/crds"))
-	g.Expect(rr.Manifests[1].ContextDir).To(Equal("aigrid"))
-	g.Expect(rr.Manifests[1].String()).To(Equal("/manifests/aigrid/overlays/openshift"))
+
+	for _, name := range []string{"test-ns-ai-grid-operator", "test-ns-ai-grid"} {
+		ns := &corev1.Namespace{}
+		g.Expect(rr.Client.Get(context.Background(), types.NamespacedName{Name: name}, ns)).To(Succeed(), name)
+	}
 }
 
 func TestInitializeRemovedAIGrid(t *testing.T) {
@@ -1203,4 +1209,82 @@ func TestAIGridOperatorManifestsRender(t *testing.T) {
 	g.Expect(kinds["Deployment"]).To(Equal(1))
 	g.Expect(kinds["CustomResourceDefinition"]).To(BeZero())
 	g.Expect(kinds["Namespace"]).To(BeZero())
+}
+
+func TestRenderAIGridOperatorOwnNamespace(t *testing.T) {
+	g := NewWithT(t)
+
+	manifestsPath := t.TempDir()
+	source := filepath.Join("..", "..", "..", "config", "manifests", "aigrid")
+	g.Expect(os.CopyFS(filepath.Join(manifestsPath, "aigrid"), os.DirFS(source))).To(Succeed())
+	t.Setenv("RELATED_IMAGE_ODH_PRAXIS_AI_GRID_OPERATOR_IMAGE", "quay.io/example/grid-operator@sha256:"+strings.Repeat("a", 64))
+	m, err := NewModule(&moduleconfig.Config{
+		PlatformType:          "OpenDataHub",
+		PlatformVersion:       "1.0.0",
+		ManifestsPath:         manifestsPath,
+		ApplicationsNamespace: "test-ns",
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	obj := newTestAIGateway()
+	obj.Spec.AIGrid.ManagementState = managedState
+	rr := newTestRR(obj)
+	g.Expect(m.renderAIGridOperator(context.Background(), rr)).To(Succeed())
+	g.Expect(rr.Resources).NotTo(BeEmpty())
+
+	const operatorNs, gatewayNs = "test-ns-ai-grid-operator", "test-ns-ai-grid"
+	gatewayBindings := 0
+	for _, o := range rr.Resources {
+		g.Expect(o.GetLabels()).To(HaveKeyWithValue(labels.K8SCommon.PartOf, componentName), o.GetName())
+		switch {
+		case o.GetKind() == "RoleBinding" && o.GetNamespace() == gatewayNs:
+			g.Expect(o.GetName()).To(Equal(aiGridOperatorResourcesBinding))
+			gatewayBindings++
+		case o.GetNamespace() != "":
+			g.Expect(o.GetNamespace()).To(Equal(operatorNs), o.GetKind()+"/"+o.GetName())
+		}
+		if o.GetKind() == "ClusterRoleBinding" || o.GetKind() == "RoleBinding" {
+			subjects, _, err := unstructured.NestedSlice(o.Object, "subjects")
+			g.Expect(err).NotTo(HaveOccurred())
+			for _, subject := range subjects {
+				g.Expect(subject.(map[string]any)["namespace"]).To(Equal(operatorNs), o.GetName())
+			}
+		}
+		if o.GetKind() == "Deployment" {
+			containers, _, err := unstructured.NestedSlice(o.Object, "spec", "template", "spec", "containers")
+			g.Expect(err).NotTo(HaveOccurred())
+			env := containers[0].(map[string]any)["env"].([]any)
+			g.Expect(env).To(ContainElement(map[string]any{"name": "GRID_GATEWAY_NAMESPACE", "value": gatewayNs}))
+		}
+	}
+	g.Expect(gatewayBindings).To(Equal(1))
+}
+
+func TestRenderAIGridOperatorRemoved(t *testing.T) {
+	g := NewWithT(t)
+
+	m := newTestModule(t)
+	obj := newTestAIGateway()
+	obj.Spec.AIGrid.ManagementState = removedState
+	rr := newTestRR(obj)
+	g.Expect(m.renderAIGridOperator(context.Background(), rr)).To(Succeed())
+	g.Expect(rr.Resources).To(BeEmpty())
+}
+
+func TestDeriveAIGridNamespace(t *testing.T) {
+	g := NewWithT(t)
+
+	g.Expect(deriveAIGridNamespace(odhApplicationsNS)).To(Equal("odh-ai-grid"))
+	g.Expect(deriveAIGridNamespace(rhoaiApplicationsNS)).To(Equal("redhat-ai-grid"))
+	g.Expect(deriveAIGridNamespace("custom-apps")).To(Equal("custom-apps-ai-grid"))
+	g.Expect(deriveAIGridOperatorNamespace(odhApplicationsNS)).To(Equal("odh-ai-grid-operator"))
+	g.Expect(deriveAIGridOperatorNamespace(rhoaiApplicationsNS)).To(Equal("redhat-ai-grid-operator"))
+	g.Expect(deriveAIGridOperatorNamespace("custom-apps")).To(Equal("custom-apps-ai-grid-operator"))
+	g.Expect(validation.IsDNS1123Label(deriveAIGridOperatorNamespace(strings.Repeat("a", 60)))).To(BeEmpty())
+
+	long := strings.Repeat("a", 60)
+	derived := deriveAIGridNamespace(long)
+	g.Expect(validation.IsDNS1123Label(derived)).To(BeEmpty())
+	g.Expect(derived).To(HaveSuffix("-ai-grid"))
+	g.Expect(deriveAIGridNamespace(long + "b")).NotTo(Equal(deriveAIGridNamespace(long + "c")))
 }
